@@ -1,7 +1,6 @@
 """Schema facts in Python; optional, bounded diagnosis with TypeSafe's Jev."""
 
 from __future__ import annotations
-from contextlib import nullcontext
 from functools import lru_cache
 from hashlib import sha256
 from threading import Lock
@@ -61,13 +60,14 @@ def _name(value: str) -> str:
 
 
 def _schema(source: dict | list[tuple]) -> dict[str, str]:
+
     if isinstance(source, dict):
         for wrapper in ("contract", "schema"):
             if isinstance(source.get(wrapper), (dict, list)):
                 return _schema(source[wrapper])
-        # List values identify the wrapper, so literal columns/dtypes fields work.
-        if any(isinstance(source.get(key), list) for key in ("columns", "dtypes")):
-            columns, dtypes = source.get("columns"), source.get("dtypes")
+            
+        if any(isinstance(source.get(key), list) for key in ("columns", "dtypes", "types")):
+            columns, dtypes = source.get("columns"), source.get("dtypes") or source.get("types")
             if not isinstance(columns, list) or not isinstance(dtypes, list):
                 raise ValueError("'columns' and 'dtypes' must both be lists.")
             if len(columns) != len(dtypes):
@@ -143,6 +143,7 @@ def _changes(contract: dict, received: dict, evidence: dict,
             if facts.get("null_count") and actual != "unknown":
                 issues.append(("null_values", False))
         if issues:
+            facts = {k: v for k, v in facts.items() if k != "null_count" or v}
             changes.append({"column": name, "issues": [kind for kind, _ in issues],
                             "expected": expected, "received": actual,
                             "blocking": any(blocking for _, blocking in issues), "evidence": facts})
@@ -158,7 +159,7 @@ def _decision(answer: Any, options: dict) -> dict:
             "confidence": answer.confidence, "alternatives": dict(answer.probabilities)}
 
 
-def _review(snapshot: dict, api_key: str | None, client: Any, timeout: float, cache: bool) -> dict:
+def _review(snapshot: dict, api_key: str | None, timeout: float, cache: bool) -> dict:
     from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
 
     changes = [{**c, "evidence": {k: v for k, v in c["evidence"].items() if k != "example_rows"}}
@@ -167,10 +168,10 @@ def _review(snapshot: dict, api_key: str | None, client: Any, timeout: float, ca
     snapshot = {**snapshot, "changes": changes}
 
     if cache:
-        settings = [] if client is not None else [api_key or os.getenv("TYPESAFE_API_KEY"),
+        settings = [api_key or os.getenv("TYPESAFE_API_KEY"),
                     os.getenv("TYPESAFE_DEFAULT_MODEL"), os.getenv("TYPESAFE_BASE_URL")]
         
-        key = (client, sha256(json.dumps([snapshot, settings], sort_keys=True).encode()).digest())
+        key = sha256(json.dumps([snapshot, settings], sort_keys=True).encode()).digest()
         with _review_lock:
             saved = _reviews.get(key)
             if saved and monotonic() - saved[0] < CACHE_SECONDS:
@@ -179,9 +180,13 @@ def _review(snapshot: dict, api_key: str | None, client: Any, timeout: float, ca
     indices = sorted(range(len(changes)), key=lambda i: (
         not changes[i]["blocking"], "added" in changes[i]["issues"], i,
     ))[:MAX_REVIEW_FIELDS]
-    added = [i for i, c in enumerate(changes) if "added" in c["issues"]][:MAX_RENAME_OPTIONS]
-    missing = [i for i in indices if "missing" in changes[i]["issues"]][:MAX_RENAME_FIELDS]
-    rename_fields = missing if added else []
+    added = [i for i, c in enumerate(changes) if "added" in c["issues"]]
+    missing = [i for i, c in enumerate(changes) if "missing" in c["issues"]]
+    rename_fields = [i for i in indices if "missing" in changes[i]["issues"]][:MAX_RENAME_FIELDS] if added else []
+    limits = {"fields": (len(indices), len(changes)),
+              "rename_fields": (len(rename_fields), len(missing) if added else 0),
+              "rename_options": (min(len(added), MAX_RENAME_OPTIONS), len(added)) if missing else (0, 0)}
+    added = added[:MAX_RENAME_OPTIONS]
     coverage = {"total_fields": len(changes), "reviewed_fields": indices,
                 "rename_fields": rename_fields, "rename_options": added}
     options = {f"field_{i}": changes[i]["column"] for i in added}
@@ -204,8 +209,7 @@ def _review(snapshot: dict, api_key: str | None, client: Any, timeout: float, ca
                              "received": len(snapshot["received"])}, "coverage": coverage,
              "added_fields": {f"field_{i}": {"column": changes[i]["column"],
                                              "type": changes[i]["received"]} for i in added}}
-    manager = nullcontext(client) if client is not None else TypeSafeClient(api_key=api_key)
-    with manager as reviewer:
+    with TypeSafeClient(api_key=api_key) as reviewer:
         response = reviewer.system_one(state=state, questions=questions, timeout=timeout,
                                        retry=RetryPolicy(max_retries=0))
     diagnosis = _decision(response.choices["diagnosis"], DIAGNOSES)
@@ -227,9 +231,14 @@ def _review(snapshot: dict, api_key: str | None, client: Any, timeout: float, ca
         rename["competing_changes"] = [other["change_indices"][0] for other in renames
             if other is not rename and len(rename["change_indices"]) == 2
             and other["change_indices"][1:] == rename["change_indices"][1:]]
-    result = {"status": "completed", "diagnosis": diagnosis, "renames": renames,
-              "coverage": coverage, "cached": False, "error": None,
+    result = {"status": "completed", "diagnosis": diagnosis, "cached": False, "error": None,
               "model": response.model, "input_tokens": response.usage.input_tokens}
+    if renames:
+        result["renames"] = renames
+    partial = {name: {"reviewed": reviewed, "total": total}
+               for name, (reviewed, total) in limits.items() if reviewed < total}
+    if partial:
+        result["coverage"] = partial
     if cache:
         with _review_lock:
             if key not in _reviews and len(_reviews) >= CACHE_SIZE:
@@ -246,7 +255,6 @@ def check_schema(
     allow_extra: bool = False,
     context: str | dict | None = None,
     api_key: str | None = None,
-    client: Any = None,
     timeout: float = 1.0,
     cache: bool = True,
 ) -> dict[str, Any]:
@@ -256,15 +264,14 @@ def check_schema(
     fields are required and types match after aliasing. Partial nulls are advisory;
     all-null fields cannot verify a type. Empty contracts/batches raise ValueError.
     Records are never modified. AI receives metadata and context, not values.
-    One call diagnoses the change set and possible renames; coverage is explicit.
+    Empty renames and zero null counts are omitted; coverage appears only when limited.
     Repeated reviews are cached for five minutes (256 entries); validation and
     row evidence are always fresh. Pass cache=False to force a fresh review.
-    Pass client= to reuse a TypeSafeClient; its configured model is honored.
+    AI uses api_key or TYPESAFE_API_KEY; connections are managed internally.
     timeout bounds HTTP operations, not wall time; retries are disabled. Failures
     preserve validation and appear in review.error. See README.md for the format.
     """
-    if client is not None and api_key is not None:
-        raise ValueError("Pass either client or api_key, not both.")
+
     contract = _schema(schema_contract)
     if not contract:
         raise ValueError("Schema contract cannot be empty.")
@@ -277,12 +284,11 @@ def check_schema(
         raise TypeError("Incoming must be a schema dict or list of row dicts.")
     changes = _changes(contract, received, evidence, row_count, allow_extra)
     review = {"status": "disabled" if not ai_review else "not_needed", "diagnosis": None,
-              "renames": [], "coverage": None, "cached": False,
-              "error": None, "model": None, "input_tokens": None}
+              "cached": False, "error": None, "model": None, "input_tokens": None}
     if ai_review and changes:
         try:
             review = _review({"contract": contract, "received": received, "changes": changes,
-                              "context": context}, api_key, client, timeout, cache)
+                              "context": context}, api_key, timeout, cache)
         except Exception as exc:
             review.update(status="failed", error=f"{type(exc).__name__}: {exc}")
     return {"valid": not any(c["blocking"] for c in changes),

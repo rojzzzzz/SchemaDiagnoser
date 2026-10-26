@@ -1,0 +1,31 @@
+name: Orders API
+version: "1.0.0"
+description: Baseline order records produced by the Mock Orders API before schema drift.
+tags:
+  - orders
+  - example
+
+source:
+  file: use_example/mock_api.py
+  api: Mock Orders API
+  api_version: "2.0"
+  method: GET
+  path: /
+  query:
+    drift: false
+  records_path: data
+
+schema:
+  order_id: integer
+  store_id: integer
+  customer_id: integer
+  product_id: integer
+  quantity: integer
+  price: float
+  payment_method: string
+  status: string
+  created_at: timestamp
+
+serialization:
+  format: json
+  timestamps: ISO 8601 strings with UTC offset
