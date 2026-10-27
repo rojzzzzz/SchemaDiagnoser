@@ -173,13 +173,11 @@ def _changes(contract: dict, received: dict, evidence: dict,
             issues.append(("added", not allow_extra))
 
         else:
-            # A type is compatible only when the contract explicitly includes it.
             unexpected = set(actual.split("|")) - set(expected.split("|"))
             if unexpected - {"null"}:
                 issues.append(("unknown_type" if unexpected & {"unknown", "mixed"} else "type_changed", True))
             if facts.get("missing_count"):
                 issues.append(("missing_in_rows", True))
-            # Declared nulls are valid data; cleaning or filling them is a separate step.
             if "null" in unexpected:
                 issues.append(("null_values", True))
 
@@ -192,13 +190,17 @@ def _changes(contract: dict, received: dict, evidence: dict,
 
 
 def _decision(answer: Any, options: dict) -> dict:
+
     if answer.choice not in options or set(answer.probabilities) != set(options):
         raise ValueError("Jev returned an answer outside the supplied choices.")
+    
     if not all(type(p) in (int, float) and 0 <= p <= 1
                for p in [answer.confidence, *answer.probabilities.values()]):
         raise ValueError("Jev returned an invalid probability or confidence.")
+    
     if not isclose(sum(answer.probabilities.values()), 1.0, abs_tol=1e-6):
         raise ValueError("Jev returned probabilities that do not sum to one.")
+    
     return {"category": answer.choice, "probability": answer.probabilities[answer.choice],
             "confidence": answer.confidence, "alternatives": dict(answer.probabilities)}
 

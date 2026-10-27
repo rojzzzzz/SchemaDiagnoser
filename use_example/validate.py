@@ -70,9 +70,9 @@ def validate_order(order_data: dict[str, Any], contract: dict[str, Any]) -> dict
 
     summary = "\n".join(lines)
     if not diagnosis["valid"]:
-        logger.error("Order rejected:\n%s", summary)
+        logger.error(f"Order rejected:\n{summary}")
         send_email("Order rejected — schema mismatch", summary)
     else:
-        logger.warning("Order accepted with schema advisories:\n%s", summary)
+        logger.warning(f"Order accepted with schema advisories:\n{summary}")
         send_email("Order schema advisory — processing continues", summary)
     return diagnosis

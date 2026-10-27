@@ -1,4 +1,4 @@
-from use_example.producer import BOOTSTRAP_SERVERS, ENDPOINT, RAW_TOPIC
+from use_example.config import BOOTSTRAP_SERVERS, ENDPOINT, RAW_TOPIC
 from kafka import KafkaProducer
 import requests
 import logging
@@ -12,7 +12,7 @@ producer = KafkaProducer(
     value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     key_serializer=lambda k: json.dumps(k).encode("utf-8"),
     enable_idempotence=True,
-    acks=1,
+    acks="all",
     linger_ms=5
 )
 
@@ -40,7 +40,7 @@ def make_data_highway():
         try:
             for _ in range(10000):
                     response = request_data(session)
-                    count += 1
+                    # Publish the batch without incrementing an unused, undefined counter.
                     for order in response['data']:
                         producer.send(RAW_TOPIC, key=order['order_id'], value=order)
 

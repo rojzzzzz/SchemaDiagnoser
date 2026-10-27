@@ -10,7 +10,7 @@ continues. Invalid API inputs or contract configuration still raise errors.
 
 | Scenario | `check_schema` | Example handling |
 | --- | --- | --- |
-| All fields present with permitted types | `valid=True`, no changes | Continue unchanged; no AI or email |
+| All fields present with permitted types | `valid=True`, no changes | Continue unchanged; no AI or alert |
 | Type aliases or union ordering differ | Canonicalized; no drift | Continue unchanged |
 | Different rows use different explicitly allowed types | Valid | Continue without conversion |
 | Null permitted by a union or null-only declaration | Valid, whether some or all rows are null | Continue; no filling or alert solely for nulls |

@@ -11,8 +11,6 @@ source:
   api_version: "2.0"
   method: GET
   path: /
-  query:
-    drift: false
   records_path: data
 
 schema:
@@ -24,7 +22,7 @@ schema:
   price: float
   payment_method: string
   status: string
-  created_at: timestamp
+  created_at: string
 
 serialization:
   format: json
