@@ -1,12 +1,12 @@
-"""Schema facts in Python; optional, bounded diagnosis with TypeSafe's Jev."""
-
 from __future__ import annotations
 from functools import lru_cache
 from hashlib import sha256
+from math import isclose
 from threading import Lock
 from time import monotonic
 from copy import deepcopy
-from typing import Any
+from types import UnionType
+from typing import Any, Union, get_args, get_origin
 import json
 import os
 
@@ -14,6 +14,7 @@ ALIASES = {
     "integer": "int", "int64": "int", "int32": "int",
     "float64": "float", "float32": "float", "double": "float",
     "string": "str", "text": "str", "varchar": "str", "boolean": "bool",
+    "none": "null", "nonetype": "null",
 }
 MAX_REVIEW_FIELDS = 32
 MAX_RENAME_FIELDS = 16
@@ -23,8 +24,8 @@ CACHE_SIZE, CACHE_SECONDS = 256, 300
 _reviews, _review_lock = {}, Lock()
 
 DIAGNOSES = {
-    "naming_change": ("Fields were renamed while retaining their meaning.",
-                      "Check producer field mappings against the suggested replacements."),
+    "naming_change": ("Fields were renamed or naming variants introduced without changing meaning.",
+                      "Check producer mappings and compare renamed or duplicate field definitions."),
     "representation_change": ("The same concepts arrived with different types or serialization.",
                               "Inspect serialization and test conversions on actual values."),
     "semantic_change": ("Context suggests a change in meaning, not just representation.",
@@ -45,58 +46,84 @@ DIAGNOSES = {
 
 
 @lru_cache(maxsize=128)
-def _dtype(value: type | str) -> str:
-    name = value.__name__ if isinstance(value, type) else value
-    if not isinstance(name, str) or not name.strip():
-        raise TypeError(f"Invalid dtype: {value!r}")
-    name = name.strip().lower()
-    return ALIASES.get(name, name)
+def _dtype(value: Any) -> str:
+    """Standardize a type or explicit union, including declared nullability."""
 
+    if get_origin(value) in (Union, UnionType):
+        return "|".join(sorted({_dtype(member) for member in get_args(value)}))
+    name = "null" if value is None else value.__name__ if isinstance(value, type) else value
+    if not isinstance(name, str) or any(not part.strip() for part in name.split("|")):
+        raise TypeError(f"Invalid dtype: {value!r}")
+    names = (part.strip().lower() for part in name.split("|"))
+    return "|".join(sorted({ALIASES.get(part, part) for part in names}))
 
 def _name(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Invalid column name: {value!r}")
     return value
 
-
 def _schema(source: dict | list[tuple]) -> dict[str, str]:
+    """Convert a schema contract into a dict of column:type pairs."""
 
     if isinstance(source, dict):
-        for wrapper in ("contract", "schema"):
-            if isinstance(source.get(wrapper), (dict, list)):
-                return _schema(source[wrapper])
-            
-        if any(isinstance(source.get(key), list) for key in ("columns", "dtypes", "types")):
-            columns, dtypes = source.get("columns"), source.get("dtypes") or source.get("types")
-            if not isinstance(columns, list) or not isinstance(dtypes, list):
-                raise ValueError("'columns' and 'dtypes' must both be lists.")
-            if len(columns) != len(dtypes):
-                raise ValueError("'columns' and 'dtypes' lengths differ.")
-            pairs = zip(columns, dtypes)
+        wrappers = [key for key in ("contract", "schema") if isinstance(source.get(key), (dict, list))]
+        if len(wrappers) > 1:
+            raise ValueError(f"Schema dict cannot contain multiple wrappers: {wrappers}")
+        if wrappers:
+            return _schema(source[wrappers[0]])
+
+        has_types = "types" in source
+        has_dtypes = "dtypes" in source
+
+        if any(isinstance(source.get(key), list) for key in ("columns", "types", "dtypes")):
+            if has_dtypes and has_types:
+                raise ValueError("Schema dict cannot contain both 'types' and 'dtypes' keys.")
+            columns = source.get("columns")
+            types = source.get("types") if has_types else source.get("dtypes")
+
+            if not isinstance(columns, list):
+                raise ValueError("'columns' must be a list of column names.")
+            if not isinstance(types, list):
+                raise ValueError("'types' or 'dtypes' must be a list of type names.")
+            if len(columns) != len(types):
+                raise ValueError("'columns' and 'types'/'dtypes' lists must have the same length.")
+
+            pairs = zip(columns, types)
+
         else:
             pairs = source.items()
+
     elif isinstance(source, list):
         pairs = source
+
     else:
-        raise TypeError("Schema must be a dict or list of (column, dtype) pairs.")
-    result = {}
+        raise TypeError("Schema must be a dict or a list of (column, type) pairs.")
+
+    result: dict[str, str] = {}
+
     for pair in pairs:
-        if not isinstance(pair, (tuple, list)) or len(pair) != 2:
-            raise ValueError(f"Invalid column definition: {pair!r}")
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise ValueError(f"Each schema pair must be a list or tuple of length 2: {pair!r}")
         name, dtype = pair
-        if _name(name) in result:
-            raise ValueError(f"Duplicate column: {name!r}")
-        result[name] = _dtype(dtype)
+        name = _name(name)
+        dtype = _dtype(dtype)
+        if name in result:
+            raise ValueError(f"Duplicate column name in schema: {name!r}")
+        result[name] = dtype
+
     return result
 
-
 def _records(rows: list[dict]) -> tuple[dict[str, str], dict[str, dict]]:
+
     if not rows:
         raise ValueError("Cannot infer schema from empty records; pass a schema dict.")
+
     evidence = {}
+
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
-            raise TypeError("Every incoming record must be a dict.")
+            raise TypeError("Every incoming record must be a dict[column_name: value].")
+
         for name, value in row.items():
             if _name(name) not in evidence:
                 evidence[name] = {"observed_types": {}, "null_count": 0,
@@ -104,44 +131,58 @@ def _records(rows: list[dict]) -> tuple[dict[str, str], dict[str, dict]]:
             field = evidence[name]
             field["missing_count"] -= 1
             dtype = "null" if value is None else _dtype(type(value))
+
             if value is None:
                 field["null_count"] += 1
             else:
                 types = field["observed_types"]
                 types[dtype] = types.get(dtype, 0) + 1
+
             examples = field["example_rows"].setdefault(dtype, [])
             if len(examples) < MAX_EXAMPLE_ROWS:
                 examples.append(index)
+
     received = {}
     for name, field in evidence.items():
-        types = field["observed_types"]
-        received[name] = next(iter(types)) if len(types) == 1 else "mixed" if types else "unknown"
+        types = set(field["observed_types"])
+        if field["null_count"]:
+            types.add("null")
+        received[name] = "|".join(sorted(types))
+
     return received, evidence
 
 
 def _changes(contract: dict, received: dict, evidence: dict,
              row_count: int | None, allow_extra: bool) -> list[dict]:
-    if contract == received and not any(
-        field["missing_count"] or field["null_count"] for field in evidence.values()
-    ):
+
+    if contract == received and not any(field["missing_count"] for field in evidence.values()):
         return []
+
     changes = []
+
     for name in sorted(contract.keys() | received.keys()):
         expected, actual = contract.get(name), received.get(name)
         facts = evidence.get(name, {})
         issues = []
+
         if name not in received:
             issues.append(("missing", True))
             facts = {"missing_count": row_count} if row_count is not None else {}
+
         elif name not in contract:
             issues.append(("added", not allow_extra))
+
         else:
-            if actual != expected:
-                issues.append(("unknown_type" if actual == "unknown" else "type_changed", True))
+            # A type is compatible only when the contract explicitly includes it.
+            unexpected = set(actual.split("|")) - set(expected.split("|"))
+            if unexpected - {"null"}:
+                issues.append(("unknown_type" if unexpected & {"unknown", "mixed"} else "type_changed", True))
             if facts.get("missing_count"):
                 issues.append(("missing_in_rows", True))
-            if facts.get("null_count") and actual != "unknown":
-                issues.append(("null_values", False))
+            # Declared nulls are valid data; cleaning or filling them is a separate step.
+            if "null" in unexpected:
+                issues.append(("null_values", True))
+
         if issues:
             facts = {k: v for k, v in facts.items() if k != "null_count" or v}
             changes.append({"column": name, "issues": [kind for kind, _ in issues],
@@ -153,8 +194,11 @@ def _changes(contract: dict, received: dict, evidence: dict,
 def _decision(answer: Any, options: dict) -> dict:
     if answer.choice not in options or set(answer.probabilities) != set(options):
         raise ValueError("Jev returned an answer outside the supplied choices.")
-    if not all(0 <= p <= 1 for p in [answer.confidence, *answer.probabilities.values()]):
+    if not all(type(p) in (int, float) and 0 <= p <= 1
+               for p in [answer.confidence, *answer.probabilities.values()]):
         raise ValueError("Jev returned an invalid probability or confidence.")
+    if not isclose(sum(answer.probabilities.values()), 1.0, abs_tol=1e-6):
+        raise ValueError("Jev returned probabilities that do not sum to one.")
     return {"category": answer.choice, "probability": answer.probabilities[answer.choice],
             "confidence": answer.confidence, "alternatives": dict(answer.probabilities)}
 
@@ -164,13 +208,13 @@ def _review(snapshot: dict, api_key: str | None, timeout: float, cache: bool) ->
 
     changes = [{**c, "evidence": {k: v for k, v in c["evidence"].items() if k != "example_rows"}}
                for c in snapshot["changes"]]
-    
+
     snapshot = {**snapshot, "changes": changes}
 
     if cache:
-        settings = [api_key or os.getenv("TYPESAFE_API_KEY"),
+        settings = [api_key if api_key is not None else os.getenv("TYPESAFE_API_KEY"),
                     os.getenv("TYPESAFE_DEFAULT_MODEL"), os.getenv("TYPESAFE_BASE_URL")]
-        
+
         key = sha256(json.dumps([snapshot, settings], sort_keys=True).encode()).digest()
         with _review_lock:
             saved = _reviews.get(key)
@@ -261,27 +305,34 @@ def check_schema(
     """Diagnose flat schemas or record batches; optionally ask Jev about the drift.
 
     A dict incoming is a schema; use [message] for a single record. All contract
-    fields are required and types match after aliasing. Partial nulls are advisory;
-    all-null fields cannot verify a type. Empty contracts/batches raise ValueError.
+    fields are required. Types and nulls must be explicitly allowed, e.g. int | None
+    or "int|float". No values are coerced. Every row must satisfy the contract.
+    Empty contracts/batches raise ValueError; unknown/mixed are not contract types.
     Records are never modified. AI receives metadata and context, not values.
     Empty renames and zero null counts are omitted; coverage appears only when limited.
     Repeated reviews are cached for five minutes (256 entries); validation and
     row evidence are always fresh. Pass cache=False to force a fresh review.
     AI uses api_key or TYPESAFE_API_KEY; connections are managed internally.
     timeout bounds HTTP operations, not wall time; retries are disabled. Failures
-    preserve validation and appear in review.error. See README.md for the format.
+    preserve validation and appear in review.error.
     """
 
     contract = _schema(schema_contract)
     if not contract:
         raise ValueError("Schema contract cannot be empty.")
+    if any(set(dtype.split("|")) & {"unknown", "mixed"} for dtype in contract.values()):
+        raise ValueError("Contract types must be explicit types, not unknown or mixed.")
+
     if isinstance(incoming, list):
         received, evidence = _records(incoming)
         row_count = len(incoming)
+
     elif isinstance(incoming, dict):
         received, evidence, row_count = _schema(incoming), {}, None
+
     else:
         raise TypeError("Incoming must be a schema dict or list of row dicts.")
+
     changes = _changes(contract, received, evidence, row_count, allow_extra)
     review = {"status": "disabled" if not ai_review else "not_needed", "diagnosis": None,
               "cached": False, "error": None, "model": None, "input_tokens": None}

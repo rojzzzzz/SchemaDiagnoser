@@ -25,3 +25,10 @@ PROCESSED_TOPIC = get_env("PROCESSED_TOPIC")
 
 
 ENDPOINT = get_env("ENDPOINT")
+CONTRACT_PATH = "data_contract.yml"
+
+SENDER_EMAIL = get_env("SENDER_EMAIL")
+RECEIVER_EMAIL = get_env("RECEIVER_EMAIL")
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
