@@ -8,6 +8,8 @@ def adapt_order(
 
     Schema expansion drops extra fields. Naming or mixed changes drop only
     redundant scalar aliases (case/underscore variants with identical values).
+    Other high-confidence categories still drop reported extra fields so the
+    returned order does not preserve known non-contract additions.
     Require a complete review with probability >= 0.9; otherwise keep the copy.
     Contract fields and the original order are never modified.
     """
@@ -16,16 +18,15 @@ def adapt_order(
     review = diagnosis["review"]
     explanation = review["diagnosis"] or {}
     category = explanation.get("category")
+    added = {c["column"] for c in diagnosis["changes"] if c["issues"] == ["added"]}
 
     if (review["status"] != "completed" or review.get("coverage")
-            or category not in {"schema_expansion", "naming_change", "mixed_changes"}
             or not explanation.get("probability", 0) >= 0.9):
         return adapted
 
-    added = {c["column"] for c in diagnosis["changes"] if c["issues"] == ["added"]}
     original = order_data.keys() - added
     for column in added:
-        if category == "schema_expansion":
+        if category not in {"naming_change", "mixed_changes"}:
             adapted.pop(column, None)
             continue
 
