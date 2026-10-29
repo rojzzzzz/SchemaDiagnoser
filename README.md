@@ -145,3 +145,35 @@ For the record example above, `report` contains:
 The `amount` in row 0 is a string, so it doesn't match the expected float.
 AI review is disabled because the example uses the default setting.
 
+With `ai_review=True`, a successful review might look like this (the scores,
+model, and token count are illustrative):
+
+```python
+report['review'] = {
+    'status': 'completed',
+    'diagnosis': {
+        'category': 'representation_change',
+        'probability': 0.8,
+        'confidence': 0.85,
+        'alternatives': {
+            'naming_change': 0.02,
+            'representation_change': 0.8,
+            'semantic_change': 0.03,
+            'event_shape_change': 0.02,
+            'inconsistent_records': 0.03,
+            'schema_expansion': 0.02,
+            'incomplete_payload': 0.02,
+            'mixed_changes': 0.03,
+            'unknown': 0.03,
+        },
+        'check': 'Inspect serialization and test conversions on actual values.',
+    },
+    'cached': False,
+    'error': None,
+    'model': 'example-model',
+    'input_tokens': 400,
+}
+```
+
+The local result stays invalid; the review suggests where to investigate.
+
