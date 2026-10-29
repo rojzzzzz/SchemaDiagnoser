@@ -112,3 +112,36 @@ diagnosis and may include rename hypotheses or partial-coverage details. A
 failed review includes an error and leaves the local validation result intact.
 Malformed inputs, an empty contract, and an empty record batch raise an error.
 
+## Example output
+
+For the record example above, `report` contains:
+
+```python
+{
+    'valid': False,
+    'changes': [{
+        'column': 'amount',
+        'issues': ['type_changed'],
+        'expected': 'float',
+        'received': 'str',
+        'blocking': True,
+        'evidence': {
+            'observed_types': {'str': 1},
+            'missing_count': 0,
+            'example_rows': {'str': [0]},
+        },
+    }],
+    'review': {
+        'status': 'disabled',
+        'diagnosis': None,
+        'cached': False,
+        'error': None,
+        'model': None,
+        'input_tokens': None,
+    },
+}
+```
+
+The `amount` in row 0 is a string, so it doesn't match the expected float.
+AI review is disabled because the example uses the default setting.
+
