@@ -32,12 +32,13 @@ and no extra field is added. The individual-change counts use the additional
 30% probability. Actual detected changes can differ when an individual change
 overlaps or reverses a shared change.
 
-For 100,000 orders, the estimated Jev cost is **$0.019–$0.047**. This estimate
+For 100,000 orders, the estimated Jev cost is **$0.031–$0.041**. This estimate
 assumes about 1,115 fresh reviews: one for each of the 815 responses with shared
-drift, plus one for each of the 300 individual changes. At 400–1,000 input
-tokens per review, that is roughly 446,000–1,115,000 tokens, priced at
-[$0.042 per million input tokens](https://docs.typesafe.ai/models). The token
-count is a planning assumption, not a measurement.
+drift, plus one for each of the 300 individual changes. Using the
+[measured range of 665–876 input tokens per review](../README.md#ai-review-cost),
+that is 741,475–976,740 tokens, priced at
+[$0.042 per million input tokens](https://docs.typesafe.ai/models). Actual usage
+depends on the mix of changes.
 
 This is a scenario rather than a predicted bill. Successful equivalent reviews
 are cached for five minutes per process, so the other orders sharing a schema

@@ -18,16 +18,18 @@ Local checks use the standard library. Install `typesafe-sdk` and set
 
 ## Latency
 
-SchemaDiagnoser is primarly thought for Event-Driven or pipelines moving data in real time, that makes controlling latency gains one of the most important benchmarks. The following are estimations based on the Jev AI documentation, a time per call is provided for each possible scenrio:
+Measured medians using a nine-field contract. Drift ranges
+cover five cases with 1–10 records and three live reviews per case (15 total).
+SDK import is excluded; timings vary by machine and network.
 
 
 | Case | Time per call |
 | --- | ---: |
-| Clean record, AI disabled | 21.3 µs |
-| Clean record, AI enabled | 21.6 µs |
-| Schema drift, AI disabled | 33.5 µs |
-| Schema drift, cached AI review | 73.9 µs |
-| Schema drift, fresh review with immediate mock | 55.9 µs |
+| Clean record, AI disabled | 18.97 µs |
+| Clean record, AI enabled | 18.96 µs |
+| Schema drift, AI disabled | 27.35–67.02 µs |
+| Schema drift, cached AI review | 56.30–101.99 µs |
+| Schema drift, fresh live AI review | 308.91–377.20 ms |
 
 
 ## AI review cost
@@ -40,19 +42,19 @@ As of October 2026, [TypeSafe lists Jev](https://docs.typesafe.ai/models) at
 N × average input tokens per request × $0.042 / 1,000,000
 ```
 
-For planning, the table assumes 400–1,000 input tokens per request. That is a
-rough estimate, not a measured Jev token count: request size depends on the
-changes, context, and rename questions. The function sends schema metadata and
-context, not record values. Successful fresh reviews return the actual count in
+The 15 live reviews used **665–876 input tokens per request**, averaging **739.6**
+(**11,094 total**). The table uses that measured range at the listed price;
+usage varies with changes, context, and rename questions. The function sends
+schema metadata and context, not record values. Successful fresh reviews return the actual count in
 `report["review"]["input_tokens"]`; use that value to calculate actual costs.
 
 | Fresh API requests | Estimated cost |
 | ---: | ---: |
-| 1 | $0.0000168–$0.000042 |
-| 1,000 | $0.0168–$0.042 |
-| 10,000 | $0.168–$0.42 |
-| 100,000 | $1.68–$4.20 |
-| 1,000,000 | $16.80–$42.00 |
+| 1 | $0.00002793–$0.000036792 |
+| 1,000 | $0.02793–$0.036792 |
+| 10,000 | $0.2793–$0.36792 |
+| 100,000 | $2.793–$3.6792 |
+| 1,000,000 | $27.93–$36.792 |
 
 These are Jev input charges only. Clean records and cache hits incur no Jev
 request charge; the number of fresh requests depends on the drift patterns and
