@@ -179,3 +179,5 @@ report['review'] = {
 
 The local result stays invalid; the review suggests where to investigate.
 
+Usage example in [CurlyStore Pipeline](https://github.com/rojzzzzz/CurlyStore-Pipeline)
+
